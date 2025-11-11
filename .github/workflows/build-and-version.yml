@@ -20,13 +20,12 @@ jobs:
     env:
       PROJECT_FILE: NetworkConnectivityTestingTools/NetworkConnectivityTestingTools.csproj
       PUBLISH_DIR: NetworkConnectivityTestingTools/publish
-      RELEASE_TAG: v${{ env.NEW_VERSION }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # 完整歷史，用於 tag
+          fetch-depth: 0
 
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v3
@@ -40,7 +39,7 @@ jobs:
       - name: Get current version
         id: get_version
         run: |
-          $path = "${{ github.workspace }}\\${{ env.PROJECT_FILE }}"
+          $path = "$env:GITHUB_WORKSPACE\$env:PROJECT_FILE"
           if (-not (Test-Path $path)) {
             Write-Error "csproj not found: $path"
             exit 1
@@ -66,53 +65,62 @@ jobs:
       # 更新 csproj 版本
       - name: Update project version
         run: |
-          $path = "${{ github.workspace }}\\${{ env.PROJECT_FILE }}"
+          $path = "$env:GITHUB_WORKSPACE\$env:PROJECT_FILE"
           $xml = [Xml](Get-Content $path -Raw)
           $xml.Project.PropertyGroup.Version = $env:NEW_VERSION
           $xml.Save($path)
 
-      # 建置單檔執行檔
+      # 建置單檔
       - name: Build & Publish
         run: |
-          dotnet publish ${{ env.PROJECT_FILE }} `
+          dotnet publish $env:PROJECT_FILE `
             -c Release `
             -r win-x64 `
             --self-contained true `
             -p:PublishSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true `
-            -o ${{ env.PUBLISH_DIR }}
+            -o $env:PUBLISH_DIR
 
-      # 打包 Release 檔案
+      # 打包 ZIP
       - name: Package Release
         run: |
           $zipName = "ConnTestLauncher-v$env:NEW_VERSION.zip"
-          $source = "${{ github.workspace }}\\${{ env.PUBLISH_DIR }}\\*"
+          $source = "$env:GITHUB_WORKSPACE\$env:PUBLISH_DIR\*"
           Compress-Archive -Path $source -DestinationPath $zipName -Force
           echo "ASSET_PATH=$zipName" >> $env:GITHUB_ENV
           Write-Host "Packaged: $zipName"
 
-      # 建立 Git Tag + Release
+      # 建立 GitHub Release
       - name: Create GitHub Release
         run: |
           $tag = "v$env:NEW_VERSION"
           $title = "ConnTestLauncher v$env:NEW_VERSION"
-          $body = "Auto-built on $(Get-Date -Format 'yyyy-MM-dd HH:mm') HKT`n`n**Changes:**`n- Version bump`n- Built with .NET 8 (win-x64)`n`n[Download Here]($env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/releases/latest)"
-          
+          $hktTime = (Get-Date).ToString("yyyy-MM-dd HH:mm") + " HKT"
+          $body = @"
+          Auto-built on $hktTime
+
+          **Changes:**
+          - Version bump
+          - Built with .NET 8 (win-x64)
+
+          [Download Here]($env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/releases/latest)
+          "@
+
           gh release create $tag `
             --title "$title" `
             --notes "$body" `
             --target ${{ github.sha }} `
-            "${{ env.ASSET_PATH }}"
+            "$env:ASSET_PATH"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 提交版本更新到 main
+      # 提交版本更新
       - name: Commit version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ${{ env.PROJECT_FILE }}
-          git commit -m "chore: bump version to v$env:NEW_VERSION [skip ci]" || echo "No changes to commit"
+          git add $env:PROJECT_FILE
+          git commit -m "chore: bump version to v$env:NEW_VERSION [skip ci]" || echo "No changes"
           git push origin main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
