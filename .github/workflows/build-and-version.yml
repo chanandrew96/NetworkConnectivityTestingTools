@@ -8,9 +8,14 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+
     env:
-      PROJECT_FILE: ConnTestLauncher.csproj
-      PUBLISH_DIR: ./publish
+      PROJECT_FILE: ConnTestLauncher/ConnTestLauncher.csproj   # 完整相對路徑
+      PUBLISH_DIR: ConnTestLauncher/publish
 
     steps:
       - name: Checkout code
@@ -22,55 +27,64 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Restore dependencies
-        run: dotnet restore
+        run: dotnet restore ${{ env.PROJECT_FILE }}
 
-      # 讀取目前版本
+      # 讀取目前版本（使用完整路徑）
       - name: Get current version
         id: get_version
-        shell: pwsh
         run: |
-          $xml = [Xml](Get-Content ${{ env.PROJECT_FILE }})
+          $csprojPath = "${{ github.workspace }}\\${{ env.PROJECT_FILE }}"
+          Write-Host "Reading csproj: $csprojPath"
+          
+          if (-not (Test-Path $csprojPath)) {
+            Write-Error "csproj not found: $csprojPath"
+            exit 1
+          }
+
+          $xml = [Xml](Get-Content $csprojPath -Raw)
           $version = $xml.Project.PropertyGroup.Version
           if (-not $version) { $version = "1.0" }
+          
           Write-Host "Current version: $version"
           echo "CURRENT_VERSION=$version" >> $env:GITHUB_ENV
 
       # 計算新版本 +0.1
       - name: Calculate next version
-        shell: pwsh
         run: |
           $old = $env:CURRENT_VERSION
           $parts = $old -split '\.'
           $major = $parts[0]
-          $minor = [int]$parts[1]
-          if (-not $minor) { $minor = 0 }
+          $minor = if ($parts[1]) { [int]$parts[1] } else { 0 }
           $newMinor = $minor + 1
           $newVersion = "$major.$newMinor"
           echo "NEW_VERSION=$newVersion" >> $env:GITHUB_ENV
-          Write-Host "Bumping to: $newVersion"
+          Write-Host "Bumping version to: $newVersion"
 
-      # 更新 csproj
+      # 更新 csproj 版本
       - name: Update project version
-        shell: pwsh
         run: |
-          $xml = [Xml](Get-Content ${{ env.PROJECT_FILE }})
+          $csprojPath = "${{ github.workspace }}\\${{ env.PROJECT_FILE }}"
+          $xml = [Xml](Get-Content $csprojPath -Raw)
           $xml.Project.PropertyGroup.Version = $env:NEW_VERSION
-          $xml.Save("$PWD/${{ env.PROJECT_FILE }}")
+          $xml.Save($csprojPath)
 
-      # 建置
+      # 建置 Release（單檔）
       - name: Build & Publish
         run: |
-          dotnet publish -c Release -r win-x64 --self-contained true `
+          dotnet publish ${{ env.PROJECT_FILE }} `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
             -p:PublishSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -o ${{ env.PUBLISH_DIR }}
 
-      # 打包
-      - name: Create Artifact
-        shell: pwsh
+      # 打包 Artifact
+      - name: Package Artifact
         run: |
           $zipName = "ConnTestLauncher-v$env:NEW_VERSION.zip"
-          Compress-Archive -Path ${{ env.PUBLISH_DIR }}/* -DestinationPath $zipName
+          $source = "${{ github.workspace }}\\${{ env.PUBLISH_DIR }}\\*"
+          Compress-Archive -Path $source -DestinationPath $zipName -Force
           echo "ARTIFACT_NAME=$zipName" >> $env:GITHUB_ENV
 
       - name: Upload Artifact
@@ -80,13 +94,13 @@ jobs:
           path: ConnTestLauncher-v${{ env.NEW_VERSION }}.zip
           retention-days: 7
 
-      # 提交版本變更
+      # 提交版本更新
       - name: Commit version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ${{ env.PROJECT_FILE }}
-          git commit -m "chore: bump version to $env:NEW_VERSION [skip ci]" || echo "No changes to commit"
+          git commit -m "chore: bump version to $env:NEW_VERSION [skip ci]" || echo "No changes"
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
