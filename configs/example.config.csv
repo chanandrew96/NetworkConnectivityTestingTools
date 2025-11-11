@@ -1,0 +1,4 @@
+Direction,Hosts,TcpPorts,UdpPorts,Icmp
+Outbound,DC01,80,443,389,445,53,True
+Inbound,WEB01,3389,,False
+Outbound,localhost,22,3389,,True
