@@ -1,4 +1,4 @@
-name: Build & Auto-Version
+name: Build, Version & Release
 
 on:
   push:
@@ -6,20 +6,27 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-and-release:
     runs-on: windows-latest
+    permissions:
+      contents: write   # 允許建立 Release
+      packages: read
+
     defaults:
       run:
         shell: pwsh
         working-directory: ${{ github.workspace }}
 
     env:
-      PROJECT_FILE: ConnTestLauncher/ConnTestLauncher.csproj   # 完整相對路徑
-      PUBLISH_DIR: ConnTestLauncher/publish
+      PROJECT_FILE: NetworkConnectivityTestingTools/NetworkConnectivityTestingTools.csproj
+      PUBLISH_DIR: NetworkConnectivityTestingTools/publish
+      RELEASE_TAG: v${{ env.NEW_VERSION }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 完整歷史，用於 tag
 
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v3
@@ -29,22 +36,18 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore ${{ env.PROJECT_FILE }}
 
-      # 讀取目前版本（使用完整路徑）
+      # 讀取目前版本
       - name: Get current version
         id: get_version
         run: |
-          $csprojPath = "${{ github.workspace }}\\${{ env.PROJECT_FILE }}"
-          Write-Host "Reading csproj: $csprojPath"
-          
-          if (-not (Test-Path $csprojPath)) {
-            Write-Error "csproj not found: $csprojPath"
+          $path = "${{ github.workspace }}\\${{ env.PROJECT_FILE }}"
+          if (-not (Test-Path $path)) {
+            Write-Error "csproj not found: $path"
             exit 1
           }
-
-          $xml = [Xml](Get-Content $csprojPath -Raw)
+          $xml = [Xml](Get-Content $path -Raw)
           $version = $xml.Project.PropertyGroup.Version
           if (-not $version) { $version = "1.0" }
-          
           Write-Host "Current version: $version"
           echo "CURRENT_VERSION=$version" >> $env:GITHUB_ENV
 
@@ -58,17 +61,17 @@ jobs:
           $newMinor = $minor + 1
           $newVersion = "$major.$newMinor"
           echo "NEW_VERSION=$newVersion" >> $env:GITHUB_ENV
-          Write-Host "Bumping version to: $newVersion"
+          Write-Host "Bumping to: v$newVersion"
 
       # 更新 csproj 版本
       - name: Update project version
         run: |
-          $csprojPath = "${{ github.workspace }}\\${{ env.PROJECT_FILE }}"
-          $xml = [Xml](Get-Content $csprojPath -Raw)
+          $path = "${{ github.workspace }}\\${{ env.PROJECT_FILE }}"
+          $xml = [Xml](Get-Content $path -Raw)
           $xml.Project.PropertyGroup.Version = $env:NEW_VERSION
-          $xml.Save($csprojPath)
+          $xml.Save($path)
 
-      # 建置 Release（單檔）
+      # 建置單檔執行檔
       - name: Build & Publish
         run: |
           dotnet publish ${{ env.PROJECT_FILE }} `
@@ -79,28 +82,20 @@ jobs:
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -o ${{ env.PUBLISH_DIR }}
 
-      # 打包 Artifact
-      - name: Package Artifact
+      # 打包 Release 檔案
+      - name: Package Release
         run: |
           $zipName = "ConnTestLauncher-v$env:NEW_VERSION.zip"
           $source = "${{ github.workspace }}\\${{ env.PUBLISH_DIR }}\\*"
           Compress-Archive -Path $source -DestinationPath $zipName -Force
-          echo "ARTIFACT_NAME=$zipName" >> $env:GITHUB_ENV
+          echo "ASSET_PATH=$zipName" >> $env:GITHUB_ENV
+          Write-Host "Packaged: $zipName"
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ConnTestLauncher-v${{ env.NEW_VERSION }}
-          path: ConnTestLauncher-v${{ env.NEW_VERSION }}.zip
-          retention-days: 7
-
-      # 提交版本更新
-      - name: Commit version bump
+      # 建立 Git Tag + Release
+      - name: Create GitHub Release
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ${{ env.PROJECT_FILE }}
-          git commit -m "chore: bump version to $env:NEW_VERSION [skip ci]" || echo "No changes"
-          git push
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          $tag = "v$env:NEW_VERSION"
+          $title = "ConnTestLauncher v$env:NEW_VERSION"
+          $body = "Auto-built on $(Get-Date -Format 'yyyy-MM-dd HH:mm') HKT`n`n**Changes:**`n- Version bump`n- Built with .NET 8 (win-x64)`n`n[Download Here]($env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/releases/latest)"
+          
+          gh release
