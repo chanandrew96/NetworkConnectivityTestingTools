@@ -3,13 +3,14 @@ name: Build & Auto-Version
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:  # 允許手動觸發
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-latest
     env:
-      ARTIFACT_NAME: ConnTestLauncher-v${{ steps.version.outputs.version }}
+      PROJECT_FILE: ConnTestLauncher.csproj
+      PUBLISH_DIR: ./publish
 
     steps:
       - name: Checkout code
@@ -23,66 +24,69 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore
 
-      # 讀取當前版本（從 csproj 或自訂檔案）
+      # 讀取目前版本
       - name: Get current version
-        id: current_version
+        id: get_version
+        shell: pwsh
         run: |
-          $xml = [Xml] (Get-Content ConnTestLauncher.csproj)
+          $xml = [Xml](Get-Content ${{ env.PROJECT_FILE }})
           $version = $xml.Project.PropertyGroup.Version
           if (-not $version) { $version = "1.0" }
-          echo "current_version=$version" >> $env:GITHUB_OUTPUT
-        shell: pwsh
+          Write-Host "Current version: $version"
+          echo "CURRENT_VERSION=$version" >> $env:GITHUB_ENV
 
-      # 計算新版本：+0.1
+      # 計算新版本 +0.1
       - name: Calculate next version
-        id: version
+        shell: pwsh
         run: |
-          $old = "${{ steps.current_version.outputs.current_version }}"
-          $major, $minor = $old -split '\.'
+          $old = $env:CURRENT_VERSION
+          $parts = $old -split '\.'
+          $major = $parts[0]
+          $minor = [int]$parts[1]
           if (-not $minor) { $minor = 0 }
-          $newMinor = [int]$minor + 1
+          $newMinor = $minor + 1
           $newVersion = "$major.$newMinor"
-          echo "version=$newVersion" >> $env:GITHUB_OUTPUT
-          echo "New version: $newVersion"
-        shell: pwsh
+          echo "NEW_VERSION=$newVersion" >> $env:GITHUB_ENV
+          Write-Host "Bumping to: $newVersion"
 
-      # 更新 csproj 版本
+      # 更新 csproj
       - name: Update project version
-        run: |
-          $xml = [Xml] (Get-Content ConnTestLauncher.csproj)
-          $xml.Project.PropertyGroup.Version = "${{ steps.version.outputs.version }}"
-          $xml.Save("$PWD/ConnTestLauncher.csproj")
         shell: pwsh
+        run: |
+          $xml = [Xml](Get-Content ${{ env.PROJECT_FILE }})
+          $xml.Project.PropertyGroup.Version = $env:NEW_VERSION
+          $xml.Save("$PWD/${{ env.PROJECT_FILE }}")
 
-      # 建置 Release 版本（單檔可選）
-      - name: Build Release
+      # 建置
+      - name: Build & Publish
         run: |
           dotnet publish -c Release -r win-x64 --self-contained true `
             -p:PublishSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true `
-            -p:PublishTrimmed=false `
-            -o ./publish
+            -o ${{ env.PUBLISH_DIR }}
 
-      # 打包 Artifact
-      - name: Package Artifact
-        run: |
-          Compress-Archive -Path ./publish/* -DestinationPath "${{ env.ARTIFACT_NAME }}.zip"
+      # 打包
+      - name: Create Artifact
         shell: pwsh
+        run: |
+          $zipName = "ConnTestLauncher-v$env:NEW_VERSION.zip"
+          Compress-Archive -Path ${{ env.PUBLISH_DIR }}/* -DestinationPath $zipName
+          echo "ARTIFACT_NAME=$zipName" >> $env:GITHUB_ENV
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ARTIFACT_NAME }}
-          path: ${{ env.ARTIFACT_NAME }}.zip
+          name: ConnTestLauncher-v${{ env.NEW_VERSION }}
+          path: ConnTestLauncher-v${{ env.NEW_VERSION }}.zip
           retention-days: 7
 
-      # 提交版本更新（可選：自動 push 回 main）
+      # 提交版本變更
       - name: Commit version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ConnTestLauncher.csproj
-          git commit -m "chore: bump version to ${{ steps.version.outputs.version }} [skip ci]"
+          git add ${{ env.PROJECT_FILE }}
+          git commit -m "chore: bump version to $env:NEW_VERSION [skip ci]" || echo "No changes to commit"
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
