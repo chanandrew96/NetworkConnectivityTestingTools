@@ -9,7 +9,7 @@ jobs:
   build-and-release:
     runs-on: windows-latest
     permissions:
-      contents: write   # 允許建立 Release
+      contents: write
       packages: read
 
     defaults:
@@ -18,8 +18,8 @@ jobs:
         working-directory: ${{ github.workspace }}
 
     env:
-      PROJECT_FILE: NetworkConnectivityTestingTools.csproj
-      PUBLISH_DIR: publish
+      PROJECT_FILE: NetworkConnectivityTestingTools.csproj   # 根目錄
+      PUBLISH_DIR: publish                                     # 輸出到根目錄下的 publish/
 
     steps:
       - name: Checkout code
@@ -35,7 +35,7 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore ${{ env.PROJECT_FILE }}
 
-      # 讀取目前版本
+      # 讀取目前版本（第一個 PropertyGroup）
       - name: Get current version
         id: get_version
         run: |
@@ -44,9 +44,11 @@ jobs:
             Write-Error "csproj not found: $path"
             exit 1
           }
+
           $xml = [Xml](Get-Content $path -Raw)
-          $version = $xml.Project.PropertyGroup.Version
-          if (-not $version) { $version = "1.0" }
+          $versionNode = $xml.Project.PropertyGroup[0].Version
+          $version = if ($versionNode) { $versionNode.Trim() } else { "1.0" }
+          
           Write-Host "Current version: $version"
           echo "CURRENT_VERSION=$version" >> $env:GITHUB_ENV
 
@@ -62,15 +64,29 @@ jobs:
           echo "NEW_VERSION=$newVersion" >> $env:GITHUB_ENV
           Write-Host "Bumping to: v$newVersion"
 
-      # 更新 csproj 版本
+      # 更新第一個 PropertyGroup 的 <Version>
       - name: Update project version
         run: |
           $path = "$env:GITHUB_WORKSPACE\$env:PROJECT_FILE"
           $xml = [Xml](Get-Content $path -Raw)
-          $xml.Project.PropertyGroup.Version = $env:NEW_VERSION
+          
+          $pg = $xml.Project.PropertyGroup[0]
+          if (-not $pg) {
+            $pg = $xml.CreateElement("PropertyGroup")
+            $xml.Project.AppendChild($pg) | Out-Null
+          }
+          
+          $versionNode = $pg.SelectSingleNode("Version")
+          if (-not $versionNode) {
+            $versionNode = $xml.CreateElement("Version")
+            $pg.AppendChild($versionNode) | Out-Null
+          }
+          
+          $versionNode.InnerText = $env:NEW_VERSION
           $xml.Save($path)
+          Write-Host "Updated version to: $env:NEW_VERSION"
 
-      # 建置單檔
+      # 建置單檔（含所有資源）
       - name: Build & Publish
         run: |
           dotnet publish $env:PROJECT_FILE `
@@ -79,9 +95,10 @@ jobs:
             --self-contained true `
             -p:PublishSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:DebugType=none `
             -o $env:PUBLISH_DIR
 
-      # 打包 ZIP
+      # 打包 ZIP（包含所有輸出）
       - name: Package Release
         run: |
           $zipName = "ConnTestLauncher-v$env:NEW_VERSION.zip"
@@ -90,18 +107,26 @@ jobs:
           echo "ASSET_PATH=$zipName" >> $env:GITHUB_ENV
           Write-Host "Packaged: $zipName"
 
-      # 建立 GitHub Release
+      # 建立 GitHub Release（含 HKT 時間）
       - name: Create GitHub Release
         run: |
           $tag = "v$env:NEW_VERSION"
           $title = "ConnTestLauncher v$env:NEW_VERSION"
-          $hktTime = (Get-Date).ToString("yyyy-MM-dd HH:mm") + " HKT"
+          $hktTime = (Get-Date).AddHours(8).ToString("yyyy-MM-dd HH:mm") + " HKT"
           $body = @"
           Auto-built on $hktTime
 
-          **Changes:**
-          - Version bump
-          - Built with .NET 8 (win-x64)
+          **Features:**
+          - Inbound & Outbound multi-config testing
+          - CSV config import/export
+          - HTML + CSV reports
+          - Built with .NET 8 (win-x64 single file)
+
+          **Files included:**
+          - `ConnTestLauncher.exe`
+          - `appsettings.json`
+          - `scripts\*.ps1`
+          - `configs\example.config.csv`
 
           [Download Here]($env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/releases/latest)
           "@
