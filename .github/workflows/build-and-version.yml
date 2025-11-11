@@ -98,4 +98,21 @@ jobs:
           $title = "ConnTestLauncher v$env:NEW_VERSION"
           $body = "Auto-built on $(Get-Date -Format 'yyyy-MM-dd HH:mm') HKT`n`n**Changes:**`n- Version bump`n- Built with .NET 8 (win-x64)`n`n[Download Here]($env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/releases/latest)"
           
-          gh release
+          gh release create $tag `
+            --title "$title" `
+            --notes "$body" `
+            --target ${{ github.sha }} `
+            "${{ env.ASSET_PATH }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 提交版本更新到 main
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ env.PROJECT_FILE }}
+          git commit -m "chore: bump version to v$env:NEW_VERSION [skip ci]" || echo "No changes to commit"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
