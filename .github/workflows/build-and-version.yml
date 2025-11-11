@@ -18,8 +18,8 @@ jobs:
         working-directory: ${{ github.workspace }}
 
     env:
-      PROJECT_FILE: NetworkConnectivityTestingTools/NetworkConnectivityTestingTools.csproj
-      PUBLISH_DIR: NetworkConnectivityTestingTools/publish
+      PROJECT_FILE: NetworkConnectivityTestingTools.csproj
+      PUBLISH_DIR: publish
 
     steps:
       - name: Checkout code
